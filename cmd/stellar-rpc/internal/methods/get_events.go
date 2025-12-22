@@ -173,12 +173,9 @@ func (h eventsRPCHandler) getEvents(ctx context.Context, request protocol.GetEve
 		if request.EndLedger != 0 {
 			// User explicitly specified endLedger as the lower bound
 			lowerBound = request.EndLedger
-		} else {
-			// Default: use scan limit
-			if request.StartLedger > LedgerScanLimit {
-				lowerBound = request.StartLedger - LedgerScanLimit
-			}
 		}
+		// Default: for DESC without endLedger, scan back to retention window start
+		// The query is still bounded by the limit parameter
 		// lowerBound should not be before ledger retention window
 		lowerBound = max(ledgerRange.FirstLedger.Sequence, lowerBound)
 
