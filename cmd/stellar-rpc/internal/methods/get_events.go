@@ -169,15 +169,18 @@ func (h eventsRPCHandler) getEvents(ctx context.Context, request protocol.GetEve
 	if isDescending {
 		// DESC order: startLedger is upper bound, scan backwards
 		// Calculate lower bound
-		lowerBound := uint32(0)
-		if request.StartLedger > LedgerScanLimit {
-			lowerBound = request.StartLedger - LedgerScanLimit
+		var lowerBound uint32
+		if request.EndLedger != 0 {
+			// User explicitly specified endLedger as the lower bound
+			lowerBound = request.EndLedger
+		} else {
+			// Default: use scan limit
+			if request.StartLedger > LedgerScanLimit {
+				lowerBound = request.StartLedger - LedgerScanLimit
+			}
 		}
 		// lowerBound should not be before ledger retention window
 		lowerBound = max(ledgerRange.FirstLedger.Sequence, lowerBound)
-		if request.EndLedger != 0 {
-			lowerBound = max(request.EndLedger, lowerBound)
-		}
 
 		// Handle cursor-based pagination for DESC
 		upperCursor := protocol.Cursor{Ledger: request.StartLedger + 1} // +1 because end is exclusive
