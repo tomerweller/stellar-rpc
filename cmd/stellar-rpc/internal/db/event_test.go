@@ -204,3 +204,111 @@ func TestInsertEvents(t *testing.T) {
 	err = eventReader.GetEvents(ctx, cursorRange, nil, nil, nil, nil)
 	require.NoError(t, err)
 }
+
+// TestGetEventsTopicANDLogic verifies that topic filters use AND logic,
+// meaning an event must match ALL specified topic positions to be returned.
+// This is a regression test for a bug where topics were incorrectly combined with OR.
+func TestGetEventsTopicANDLogic(t *testing.T) {
+	db := NewTestDB(t)
+	ctx := context.TODO()
+	logger := log.DefaultLogger
+	logger.SetLevel(logrus.TraceLevel)
+	now := time.Now().UTC()
+
+	writer := NewReadWriter(logger, db, interfaces.MakeNoOpDeamon(), 10, 10, passphrase)
+	write, err := writer.NewTx(ctx)
+	require.NoError(t, err)
+
+	// Create distinct topic values
+	transfer := xdr.ScSymbol("transfer")
+	mint := xdr.ScSymbol("mint")
+	addressA := xdr.ScSymbol("addressA")
+	addressB := xdr.ScSymbol("addressB")
+
+	transferTopic := xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &transfer}
+	mintTopic := xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &mint}
+	addressATopic := xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &addressA}
+	addressBTopic := xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &addressB}
+
+	contractID := xdr.ContractId([32]byte{1, 2, 3})
+	dataVal := xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &transfer}
+
+	// Create 4 events with different topic combinations:
+	// Event 1: topic1=transfer, topic2=addressA (should match filter for transfer+addressA)
+	// Event 2: topic1=transfer, topic2=addressB (should NOT match filter for transfer+addressA)
+	// Event 3: topic1=mint, topic2=addressA (should NOT match filter for transfer+addressA)
+	// Event 4: topic1=mint, topic2=addressB (should NOT match filter for transfer+addressA)
+
+	txMeta := []xdr.TransactionMeta{
+		transactionMetaWithEvents(contractEvent(contractID, []xdr.ScVal{transferTopic, addressATopic}, dataVal)),
+		transactionMetaWithEvents(contractEvent(contractID, []xdr.ScVal{transferTopic, addressBTopic}, dataVal)),
+		transactionMetaWithEvents(contractEvent(contractID, []xdr.ScVal{mintTopic, addressATopic}, dataVal)),
+		transactionMetaWithEvents(contractEvent(contractID, []xdr.ScVal{mintTopic, addressBTopic}, dataVal)),
+	}
+
+	ledgerCloseMeta := ledgerCloseMetaWithEvents(1, now.Unix(), txMeta...)
+
+	eventW := write.EventWriter()
+	err = eventW.InsertEvents(ledgerCloseMeta)
+	require.NoError(t, err)
+	require.NoError(t, write.Commit(ledgerCloseMeta, nil))
+
+	eventReader := NewEventReader(logger, db, passphrase)
+	cursorRange := protocol.CursorRange{
+		Start: protocol.Cursor{Ledger: 1},
+		End:   protocol.Cursor{Ledger: 100},
+	}
+
+	// Encode topic values for querying
+	transferBytes, err := transferTopic.MarshalBinary()
+	require.NoError(t, err)
+	addressABytes, err := addressATopic.MarshalBinary()
+	require.NoError(t, err)
+
+	// Test 1: Query with topic1=transfer AND topic2=addressA
+	// Should return exactly 1 event (the first one)
+	topics := NestedTopicArray{
+		[][]byte{transferBytes}, // topic1 = transfer
+		[][]byte{addressABytes}, // topic2 = addressA
+		nil,                     // topic3 = wildcard
+		nil,                     // topic4 = wildcard
+	}
+
+	var foundEvents []protocol.Cursor
+	scanFunc := func(event xdr.DiagnosticEvent, cursor protocol.Cursor, ledgerCloseTimestamp int64, txHash *xdr.Hash) bool {
+		foundEvents = append(foundEvents, cursor)
+		return true // continue scanning
+	}
+
+	err = eventReader.GetEvents(ctx, cursorRange, nil, topics, nil, scanFunc)
+	require.NoError(t, err)
+	require.Len(t, foundEvents, 1, "Expected exactly 1 event matching topic1=transfer AND topic2=addressA")
+
+	// Test 2: Query with topic1=transfer only (topic2=wildcard)
+	// Should return 2 events (transfer+addressA and transfer+addressB)
+	foundEvents = nil
+	topicsOnlyTransfer := NestedTopicArray{
+		[][]byte{transferBytes}, // topic1 = transfer
+		nil,                     // topic2 = wildcard
+		nil,                     // topic3 = wildcard
+		nil,                     // topic4 = wildcard
+	}
+
+	err = eventReader.GetEvents(ctx, cursorRange, nil, topicsOnlyTransfer, nil, scanFunc)
+	require.NoError(t, err)
+	require.Len(t, foundEvents, 2, "Expected 2 events matching topic1=transfer")
+
+	// Test 3: Query with topic2=addressA only (topic1=wildcard)
+	// Should return 2 events (transfer+addressA and mint+addressA)
+	foundEvents = nil
+	topicsOnlyAddressA := NestedTopicArray{
+		nil,                     // topic1 = wildcard
+		[][]byte{addressABytes}, // topic2 = addressA
+		nil,                     // topic3 = wildcard
+		nil,                     // topic4 = wildcard
+	}
+
+	err = eventReader.GetEvents(ctx, cursorRange, nil, topicsOnlyAddressA, nil, scanFunc)
+	require.NoError(t, err)
+	require.Len(t, foundEvents, 2, "Expected 2 events matching topic2=addressA")
+}
