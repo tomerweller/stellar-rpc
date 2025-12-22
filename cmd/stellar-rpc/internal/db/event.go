@@ -340,17 +340,13 @@ func (eventHandler *eventHandler) GetEvents(
 		rowQ = rowQ.Where(sq.Eq{"event_type": eventTypes})
 	}
 
-	if len(topics) > 0 {
-		var orConditions sq.Or
-		for i, topic := range topics {
-			if topic == nil {
-				continue
-			}
-			orConditions = append(orConditions, sq.Eq{fmt.Sprintf("topic%d", i+1): topic})
+	// Apply topic filters with AND logic - an event must match ALL specified topic positions
+	// (wildcards are represented as nil entries and are skipped)
+	for i, topic := range topics {
+		if topic == nil {
+			continue
 		}
-		if len(orConditions) > 0 {
-			rowQ = rowQ.Where(orConditions)
-		}
+		rowQ = rowQ.Where(sq.Eq{fmt.Sprintf("topic%d", i+1): topic})
 	}
 
 	encodedContractIDs := make([]string, 0, len(contractIDs))
