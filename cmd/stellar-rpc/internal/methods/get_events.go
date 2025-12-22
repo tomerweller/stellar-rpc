@@ -68,28 +68,60 @@ func combineEventTypes(filters []protocol.EventFilter) []int {
 	return uniqueEventTypes
 }
 
-func combineTopics(filters []protocol.EventFilter) ([][][]byte, error) {
-	encodedTopicsList := make([][][]byte, protocol.MaxTopicCount)
+// buildFilterTopics converts protocol EventFilters into a structure that
+// preserves the filter hierarchy for proper SQL generation.
+// The returned AllFilterTopics preserves:
+// - OR between EventFilters (each filter is a separate FilterTopics)
+// - OR between TopicFilters within an EventFilter
+// - AND between positions within a TopicFilter (encoded in the TopicFilter struct)
+func buildFilterTopics(filters []protocol.EventFilter) (db.AllFilterTopics, error) {
+	result := make(db.AllFilterTopics, 0, len(filters))
 
 	for _, filter := range filters {
 		if len(filter.Topics) == 0 {
-			return [][][]byte{}, nil
+			// No topic constraints for this filter - skip it
+			// (it will match based on other criteria like contractID/eventType)
+			continue
 		}
 
+		filterTopics := make(db.FilterTopics, 0, len(filter.Topics))
+
 		for _, topicFilter := range filter.Topics {
+			var tf db.TopicFilter
+
 			for i, segmentFilter := range topicFilter {
+				if i >= protocol.MaxTopicCount {
+					break
+				}
 				if segmentFilter.Wildcard == nil && segmentFilter.ScVal != nil {
 					encodedTopic, err := segmentFilter.ScVal.MarshalBinary()
 					if err != nil {
-						return [][][]byte{}, fmt.Errorf("failed to marshal segment: %w", err)
+						return nil, fmt.Errorf("failed to marshal segment: %w", err)
 					}
-					encodedTopicsList[i] = append(encodedTopicsList[i], encodedTopic)
+					tf.Positions[i] = encodedTopic
+				}
+				// Wildcards are left as nil in the Positions array
+			}
+
+			// Only add if there's at least one non-wildcard position
+			hasConstraint := false
+			for _, pos := range tf.Positions {
+				if pos != nil {
+					hasConstraint = true
+					break
 				}
 			}
+			if hasConstraint {
+				filterTopics = append(filterTopics, tf)
+			}
+		}
+
+		if len(filterTopics) > 0 {
+			result = append(result, filterTopics)
 		}
 	}
 
-	return encodedTopicsList, nil
+	return result, nil
 }
 
 type entry struct {
@@ -163,7 +195,12 @@ func (h eventsRPCHandler) getEvents(ctx context.Context, request protocol.GetEve
 			Start: protocol.Cursor{Ledger: lowerBound},
 			End:   upperCursor,
 		}
-		validationLedger = request.StartLedger
+		// Use cursor's ledger for validation if cursor is provided, otherwise use startLedger
+		if request.Pagination != nil && request.Pagination.Cursor != nil {
+			validationLedger = request.Pagination.Cursor.Ledger
+		} else {
+			validationLedger = request.StartLedger
+		}
 	} else {
 		// ASC order: startLedger is lower bound, scan forwards (original behavior)
 		start := protocol.Cursor{Ledger: request.StartLedger}
@@ -182,7 +219,12 @@ func (h eventsRPCHandler) getEvents(ctx context.Context, request protocol.GetEve
 			Start: start,
 			End:   protocol.Cursor{Ledger: endLedger},
 		}
-		validationLedger = request.StartLedger
+		// Use cursor's ledger for validation if cursor is provided, otherwise use startLedger
+		if request.Pagination != nil && request.Pagination.Cursor != nil {
+			validationLedger = request.Pagination.Cursor.Ledger
+		} else {
+			validationLedger = request.StartLedger
+		}
 	}
 
 	if validationLedger < ledgerRange.FirstLedger.Sequence || validationLedger > ledgerRange.LastLedger.Sequence {
@@ -205,7 +247,7 @@ func (h eventsRPCHandler) getEvents(ctx context.Context, request protocol.GetEve
 		}
 	}
 
-	topics, err := combineTopics(request.Filters)
+	filterTopics, err := buildFilterTopics(request.Filters)
 	if err != nil {
 		return protocol.GetEventsResponse{}, &jrpc2.Error{
 			Code: jrpc2.InvalidParams, Message: err.Error(),
@@ -230,7 +272,7 @@ func (h eventsRPCHandler) getEvents(ctx context.Context, request protocol.GetEve
 		dbOrder = db.EventOrderDesc
 	}
 
-	err = h.dbReader.GetEvents(ctx, cursorRange, contractIDs, topics, eventTypes, dbOrder, eventScanFunction)
+	err = h.dbReader.GetEvents(ctx, cursorRange, contractIDs, filterTopics, eventTypes, dbOrder, eventScanFunction)
 	if err != nil {
 		return protocol.GetEventsResponse{}, &jrpc2.Error{
 			Code: jrpc2.InvalidRequest, Message: err.Error(),

@@ -25,6 +25,20 @@ const (
 
 type NestedTopicArray [][][]byte
 
+// TopicFilter represents a single topic filter pattern with AND logic between positions.
+// Each position maps to an encoded topic value (nil means wildcard).
+type TopicFilter struct {
+	Positions [4][]byte // topic1, topic2, topic3, topic4 (nil = wildcard)
+}
+
+// FilterTopics represents all TopicFilters within a single EventFilter (OR'd together).
+type FilterTopics []TopicFilter
+
+// AllFilterTopics represents all EventFilters (OR'd together).
+// The structure is: OR between filters, OR between TopicFilters within a filter,
+// AND between positions within a TopicFilter.
+type AllFilterTopics []FilterTopics
+
 // EventWriter is used during ingestion of events from LCM to DB
 type EventWriter interface {
 	InsertEvents(lcm xdr.LedgerCloseMeta) error
@@ -46,7 +60,7 @@ type EventReader interface {
 		ctx context.Context,
 		cursorRange protocol.CursorRange,
 		contractIDs [][]byte,
-		topics NestedTopicArray,
+		filterTopics AllFilterTopics,
 		eventTypes []int,
 		order EventOrder,
 		f ScanFunction,
@@ -301,6 +315,48 @@ func (eventHandler *eventHandler) trimEvents(latestLedgerSeq uint32, retentionWi
 	return err
 }
 
+// applyTopicFilters builds the WHERE clause for topic filtering with proper
+// OR-of-ANDs logic that matches the filter semantics:
+// - OR between EventFilters (match ANY filter)
+// - OR between TopicFilters within an EventFilter (match ANY topic pattern)
+// - AND between positions within a TopicFilter (match ALL specified positions)
+//
+// Example: For filters [transfer, addrA, *, *] OR [transfer, *, addrA, *]
+// Generates: WHERE (topic1='transfer' AND topic2='addrA') OR (topic1='transfer' AND topic3='addrA')
+func applyTopicFilters(query sq.SelectBuilder, filterTopics AllFilterTopics) sq.SelectBuilder {
+	if len(filterTopics) == 0 {
+		return query
+	}
+
+	// Collect all OR conditions across all filters
+	var allOrConditions sq.Or
+
+	for _, filterTopic := range filterTopics {
+		// Each FilterTopics contains TopicFilters that are OR'd together
+		for _, topicFilter := range filterTopic {
+			// Each TopicFilter's positions are AND'd together
+			var andConditions sq.And
+
+			for i, value := range topicFilter.Positions {
+				if value != nil {
+					andConditions = append(andConditions,
+						sq.Eq{fmt.Sprintf("topic%d", i+1): value})
+				}
+			}
+
+			if len(andConditions) > 0 {
+				allOrConditions = append(allOrConditions, andConditions)
+			}
+		}
+	}
+
+	if len(allOrConditions) > 0 {
+		query = query.Where(allOrConditions)
+	}
+
+	return query
+}
+
 // GetEvents applies f on all the events occurring in the given range with
 // specified contract IDs if provided. The events are returned in sorted
 // order based on the order parameter (ascending or descending).
@@ -313,7 +369,7 @@ func (eventHandler *eventHandler) GetEvents(
 	ctx context.Context,
 	cursorRange protocol.CursorRange,
 	contractIDs [][]byte,
-	topics NestedTopicArray,
+	filterTopics AllFilterTopics,
 	eventTypes []int,
 	order EventOrder,
 	scanner ScanFunction,
@@ -340,14 +396,11 @@ func (eventHandler *eventHandler) GetEvents(
 		rowQ = rowQ.Where(sq.Eq{"event_type": eventTypes})
 	}
 
-	// Apply topic filters with AND logic - an event must match ALL specified topic positions
-	// (wildcards are represented as nil entries and are skipped)
-	for i, topic := range topics {
-		if topic == nil {
-			continue
-		}
-		rowQ = rowQ.Where(sq.Eq{fmt.Sprintf("topic%d", i+1): topic})
-	}
+	// Build topic filter SQL with proper OR-of-ANDs logic:
+	// - OR between EventFilters (match ANY filter)
+	// - OR between TopicFilters within an EventFilter (match ANY topic pattern)
+	// - AND between positions within a TopicFilter (match ALL specified positions)
+	rowQ = applyTopicFilters(rowQ, filterTopics)
 
 	encodedContractIDs := make([]string, 0, len(contractIDs))
 	for _, contractID := range contractIDs {
@@ -367,7 +420,7 @@ func (eventHandler *eventHandler) GetEvents(
 			WithField("end", cursorRange.End.String()).
 			WithField("contractIds", encodedContractIDs).
 			WithField("eventTypes", eventTypes).
-			WithField("topics", topics).
+			WithField("filterTopics", filterTopics).
 			Debugf(
 				"db read failed for requested parameter",
 			)
@@ -422,7 +475,7 @@ func (eventHandler *eventHandler) GetEvents(
 		WithField("end", cursorRange.End.String()).
 		WithField("contractIds", encodedContractIDs).
 		WithField("eventTypes", eventTypes).
-		WithField("Topics", topics).
+		WithField("filterTopics", filterTopics).
 		Debugf("Found %d events for ledger range", foundRows)
 
 	return rows.Err()
