@@ -202,7 +202,7 @@ func TestInsertEvents(t *testing.T) {
 	cursorRange := protocol.CursorRange{Start: start, End: end}
 
 	// Pass nil for filterTopics to get all events
-	err = eventReader.GetEvents(ctx, cursorRange, nil, nil, nil, EventOrderAsc, nil)
+	err = eventReader.GetEvents(ctx, cursorRange, nil, nil, nil, EventOrderAsc, 1000, nil)
 	require.NoError(t, err)
 }
 
@@ -278,7 +278,7 @@ func TestGetEventsSingleFilterANDLogic(t *testing.T) {
 			TopicFilter{Positions: [4][]byte{transferBytes, addressABytes, nil, nil}},
 		},
 	}
-	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, scanFunc)
+	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, 1000, scanFunc)
 	require.NoError(t, err)
 	require.Len(t, foundEvents, 1, "Expected exactly 1 event matching topic1=transfer AND topic2=addressA")
 
@@ -290,7 +290,7 @@ func TestGetEventsSingleFilterANDLogic(t *testing.T) {
 			TopicFilter{Positions: [4][]byte{transferBytes, nil, nil, nil}},
 		},
 	}
-	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, scanFunc)
+	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, 1000, scanFunc)
 	require.NoError(t, err)
 	require.Len(t, foundEvents, 2, "Expected 2 events matching topic1=transfer")
 
@@ -302,7 +302,7 @@ func TestGetEventsSingleFilterANDLogic(t *testing.T) {
 			TopicFilter{Positions: [4][]byte{nil, addressABytes, nil, nil}},
 		},
 	}
-	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, scanFunc)
+	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, 1000, scanFunc)
 	require.NoError(t, err)
 	require.Len(t, foundEvents, 2, "Expected 2 events matching topic2=addressA")
 }
@@ -389,14 +389,14 @@ func TestGetEventsMultiFilterORLogic(t *testing.T) {
 		},
 	}
 
-	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, scanFunc)
+	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, 1000, scanFunc)
 	require.NoError(t, err)
 	require.Len(t, foundEvents, 2, "Expected 2 events matching 'transfers involving address A'")
 
 	// Verify: Query with no filters should return more events than the filtered query
 	// (confirms the filter is actually filtering, not just returning everything)
 	foundEvents = nil
-	err = eventReader.GetEvents(ctx, cursorRange, nil, nil, nil, EventOrderAsc, scanFunc)
+	err = eventReader.GetEvents(ctx, cursorRange, nil, nil, nil, EventOrderAsc, 1000, scanFunc)
 	require.NoError(t, err)
 	require.Greater(t, len(foundEvents), 2, "Expected more events when no filter is applied than when filtered")
 }
@@ -474,7 +474,7 @@ func TestGetEventsMultipleTopicFiltersWithinFilter(t *testing.T) {
 		},
 	}
 
-	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, scanFunc)
+	err = eventReader.GetEvents(ctx, cursorRange, nil, filterTopics, nil, EventOrderAsc, 1000, scanFunc)
 	require.NoError(t, err)
 	require.Len(t, foundEvents, 2, "Expected 2 events matching (transfer OR mint) with addressA")
 }

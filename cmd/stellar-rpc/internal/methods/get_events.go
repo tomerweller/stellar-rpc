@@ -272,7 +272,7 @@ func (h eventsRPCHandler) getEvents(ctx context.Context, request protocol.GetEve
 		dbOrder = db.EventOrderDesc
 	}
 
-	err = h.dbReader.GetEvents(ctx, cursorRange, contractIDs, filterTopics, eventTypes, dbOrder, eventScanFunction)
+	err = h.dbReader.GetEvents(ctx, cursorRange, contractIDs, filterTopics, eventTypes, dbOrder, limit*2, eventScanFunction)
 	if err != nil {
 		return protocol.GetEventsResponse{}, &jrpc2.Error{
 			Code: jrpc2.InvalidRequest, Message: err.Error(),

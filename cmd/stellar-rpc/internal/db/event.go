@@ -63,6 +63,7 @@ type EventReader interface {
 		filterTopics AllFilterTopics,
 		eventTypes []int,
 		order EventOrder,
+		limit uint,
 		f ScanFunction,
 	) error
 }
@@ -372,6 +373,7 @@ func (eventHandler *eventHandler) GetEvents(
 	filterTopics AllFilterTopics,
 	eventTypes []int,
 	order EventOrder,
+	limit uint,
 	scanner ScanFunction,
 ) error {
 	start := time.Now()
@@ -387,7 +389,8 @@ func (eventHandler *eventHandler) GetEvents(
 		From(eventTableName).
 		Where(sq.GtOrEq{"id": cursorRange.Start.String()}).
 		Where(sq.Lt{"id": cursorRange.End.String()}).
-		OrderBy("id " + orderDirection)
+		OrderBy("id " + orderDirection).
+		Limit(uint64(limit))
 
 	if len(contractIDs) > 0 {
 		rowQ = rowQ.Where(sq.Eq{"contract_id": contractIDs})
